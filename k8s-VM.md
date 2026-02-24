@@ -12,22 +12,22 @@
 | Kubernetes Master VM | `192.168.126.30` | ❌ No |
 | Internet VM | `192.168.126.20` | ✅ Yes |
 
-> Network Type: **Host-Only (VMnet2)**
+> Network Type: **Host-Only (VMnet2)** | Subnet: `192.168.126.0/24`
 
 ---
 
 ## Table of Contents
 
 - [Part 1 – Create Kubernetes VM in VMware](#part-1--create-kubernetes-vm-in-vmware)
-- [Part 2 – Configure VMnet2](#part-2--configure-vmnet2)
-- [Part 3 – Configure Static IP](#part-3--configure-static-ip)
-- [Part 4 – Hostname Fix](#part-4--hostname-fix)
-- [Part 5 – Disable Swap](#part-5--disable-swap)
-- [Part 6 – Disable SELinux](#part-6--disable-selinux)
-- [Part 7 – Load Kernel Modules](#part-7--load-kernel-modules)
-- [Part 8 – Configure Sysctl](#part-8--configure-sysctl)
-- [Part 9 – Install containerd (Offline)](#part-9--install-containerd-offline)
-- [Part 10 – Configure containerd](#part-10--configure-containerd)
+- [Part 2 – Configure Static IP](#part-2--configure-static-ip)
+- [Part 3 – Hostname Fix](#part-3--hostname-fix)
+- [Part 4 – Disable Swap](#part-4--disable-swap)
+- [Part 5 – Disable SELinux](#part-5--disable-selinux)
+- [Part 6 – Load Kernel Modules](#part-6--load-kernel-modules)
+- [Part 7 – Configure Sysctl](#part-7--configure-sysctl)
+- [Part 8 – Install containerd (Offline)](#part-8--install-containerd-offline)
+- [Part 9 – Configure containerd](#part-9--configure-containerd)
+- [Part 10 – Configure Harbor CA for containerd](#part-10--configure-harbor-ca-for-containerd)
 - [Part 11 – Install CNI Plugins](#part-11--install-cni-plugins)
 - [Part 12 – Install crictl](#part-12--install-crictl)
 - [Part 13 – Install Kubernetes Binaries](#part-13--install-kubernetes-binaries)
@@ -61,21 +61,7 @@
 
 ---
 
-## Part 2 – Configure VMnet2
-
-Navigate to: **VMware → Edit → Virtual Network Editor → Change Settings → Add Network**
-
-| Setting | Value |
-|---------|-------|
-| Name | `VMnet2` |
-| Type | Host-Only |
-| Subnet | `192.168.126.0` |
-| Mask | `255.255.255.0` |
-| DHCP | Disabled |
-
----
-
-## Part 3 – Configure Static IP
+## Part 2 – Configure Static IP
 
 **Set static IP** (replace `ens33` with your actual interface):
 
@@ -105,7 +91,7 @@ ping 192.168.126.10
 
 ---
 
-## Part 4 – Hostname Fix
+## Part 3 – Hostname Fix
 
 > ⚠️ **Critical** — Hostname mismatch causes `kubeadm` failures.
 
@@ -131,7 +117,7 @@ hostname -f
 
 ---
 
-## Part 5 – Disable Swap
+## Part 4 – Disable Swap
 
 ```bash
 swapoff -a
@@ -143,7 +129,7 @@ sed -i '/swap/d' /etc/fstab
 
 ---
 
-## Part 6 – Disable SELinux
+## Part 5 – Disable SELinux
 
 ```bash
 setenforce 0
@@ -161,7 +147,7 @@ getenforce
 
 ---
 
-## Part 7 – Load Kernel Modules
+## Part 6 – Load Kernel Modules
 
 **Create the modules config file:**
 
@@ -184,7 +170,7 @@ modprobe br_netfilter
 
 ---
 
-## Part 8 – Configure Sysctl
+## Part 7 – Configure Sysctl
 
 **Create sysctl config:**
 
@@ -204,7 +190,7 @@ sysctl --system
 
 ---
 
-## Part 9 – Install containerd (Offline)
+## Part 8 – Install containerd (Offline)
 
 **Extract containerd:**
 
@@ -217,8 +203,6 @@ tar -C /usr/local -xzf containerd-1.7.13-linux-amd64.tar.gz
 ```bash
 install -m 755 runc.amd64 /usr/local/sbin/runc
 ```
-
----
 
 **Create containerd systemd service:**
 
@@ -262,7 +246,7 @@ ctr version
 
 ---
 
-## Part 10 – Configure containerd
+## Part 9 – Configure containerd
 
 **Generate default config:**
 
@@ -280,16 +264,16 @@ containerd config default > /etc/containerd/config.toml
 vi /etc/containerd/config.toml
 ```
 
-**Set the following values inside `config.toml`:**
+**Under `[plugins."io.containerd.grpc.v1.cri"]`, set:**
 
 ```toml
-[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
-  SystemdCgroup = true
+sandbox_image = "192.168.126.10/k8s/pause:3.9"
 ```
 
+**Under `[plugins."io.containerd.grpc.v1.cri".containerd.runtimes.runc.options]`, set:**
+
 ```toml
-[plugins.'io.containerd.cri.v1.images'.pinned_images]
-  sandbox = '192.168.126.10/k8s/pause:3.9'
+SystemdCgroup = true
 ```
 
 **Restart containerd:**
@@ -298,15 +282,53 @@ vi /etc/containerd/config.toml
 systemctl restart containerd
 ```
 
-**Verify the values were applied:**
+---
+
+## Part 10 – Configure Harbor CA for containerd
+
+> ⚠️ **Important** — Without this, containerd cannot pull images from Harbor and will throw `x509` errors.
+
+**Create the cert directory for Harbor:**
 
 ```bash
-cat /etc/containerd/config.toml | grep SystemdCgroup
+mkdir -p /etc/containerd/certs.d/192.168.126.10
+```
+
+**Copy CA certificate from Harbor VM:**
+
+```bash
+scp root@192.168.126.10:/data/cert/ca.crt /root/
 ```
 
 ```bash
-cat /etc/containerd/config.toml | grep sandbox
+cp /root/ca.crt /etc/containerd/certs.d/192.168.126.10/ca.crt
 ```
+
+**Create `hosts.toml` to configure Harbor as a trusted registry:**
+
+```bash
+cat <<EOF | tee /etc/containerd/certs.d/192.168.126.10/hosts.toml
+server = "https://192.168.126.10"
+
+[host."https://192.168.126.10"]
+  capabilities = ["pull", "resolve", "push"]
+  ca = "/etc/containerd/certs.d/192.168.126.10/ca.crt"
+EOF
+```
+
+**Restart containerd:**
+
+```bash
+systemctl restart containerd
+```
+
+**Test — pull an image from Harbor:**
+
+```bash
+crictl pull 192.168.126.10/k8s/pause:3.9
+```
+
+> ✅ If the pull succeeds, Harbor CA trust is working correctly.
 
 ---
 
@@ -434,8 +456,6 @@ kubeadm init \
   --image-repository=192.168.126.10/k8s
 ```
 
----
-
 **After successful init — set up kubeconfig:**
 
 ```bash
@@ -521,6 +541,7 @@ systemctl restart kubelet
 | `Node NotReady` | CNI missing / containerd not running / wrong `sandbox_image` | Check CNI, containerd status, and `config.toml` |
 | `ImagePullBackOff` | Image not pushed to Harbor | Push missing image to Harbor registry |
 | `Lease forbidden` | Hostname mismatch | Fix `/etc/hosts` → Run `kubeadm reset` → Re-init |
+| `x509` certificate error | Harbor CA not configured in containerd | Check `/etc/containerd/certs.d/192.168.126.10/` |
 | `FailedCreatePodSandbox` | CNI not installed or wrong pause image path | Reinstall CNI plugins, verify `sandbox_image` in `config.toml` |
 
 ---
@@ -538,10 +559,11 @@ systemctl restart kubelet
 | Sysctl settings applied | ✅ |
 | containerd installed and running | ✅ |
 | `sandbox_image` pointing to Harbor | ✅ |
+| Harbor CA configured in `certs.d` | ✅ |
 | CNI plugins installed | ✅ |
 | `kubeadm init` uses Harbor `--image-repository` | ✅ |
 | Node status is Ready | ✅ |
 
 ---
 
-> **Kubernetes VM setup complete — Fully Air-Gapped Enterprise Ready! 🎉**
+> **Kubernetes Air-Gapped Cluster Complete — Enterprise Ready! 🚀**
