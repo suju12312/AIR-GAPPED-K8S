@@ -283,17 +283,24 @@ vi /etc/containerd/config.toml
 **Set the following values:**
 
 ```toml
-SystemdCgroup = true
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
+  SystemdCgroup = true
 ```
 
 ```toml
-sandbox_image = "192.168.126.10/k8s/pause:3.9"
+[plugins.'io.containerd.cri.v1.images'.pinned_images]
+  sandbox = '192.168.126.10/k8s/pause:3.9'
 ```
 
 **Restart containerd:**
 
 ```bash
 systemctl restart containerd
+```
+
+```toml
+cat /etc/containerd/config.toml | grep SystemdCgroup
+cat /etc/containerd/config.toml | grep sandbox
 ```
 
 ---
