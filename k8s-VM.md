@@ -280,7 +280,7 @@ containerd config default > /etc/containerd/config.toml
 vi /etc/containerd/config.toml
 ```
 
-**Set the following values:**
+**Set the following values inside `config.toml`:**
 
 ```toml
 [plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.runc.options]
@@ -298,8 +298,13 @@ vi /etc/containerd/config.toml
 systemctl restart containerd
 ```
 
-```toml
+**Verify the values were applied:**
+
+```bash
 cat /etc/containerd/config.toml | grep SystemdCgroup
+```
+
+```bash
 cat /etc/containerd/config.toml | grep sandbox
 ```
 
