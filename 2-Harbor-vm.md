@@ -1,30 +1,54 @@
 # Harbor-VM.md
-Air-Gapped Harbor Registry – FINAL COMPLETE VERSION
+Air-Gapped Harbor Registry Setup (RHEL 10)
+FINAL COMPLETE ENTERPRISE VERSION
 
 ============================================================
 
 ARCHITECTURE
 
-Internet VM (192.168.126.20)
-→ Has Internet
-→ Downloads everything
+Internet VM     → 192.168.126.20  (Has Internet)
+Harbor VM       → 192.168.126.10  (NO Internet)
+Kubernetes VM   → 192.168.126.30  (NO Internet)
 
-Harbor VM (192.168.126.10)
-→ NO Internet
-→ Host-only network only
-
-Kubernetes VM (192.168.126.30)
-→ NO Internet
-→ Pulls images from Harbor only
+All VMs communicate via VMnet2 (Host-Only Network)
 
 ============================================================
+PART 1 – VMware Network Configuration (CRITICAL)
 
-PART 1 – Harbor VM Network (NO INTERNET)
+------------------------------------------------------------
+STEP 1 – Create VMnet2 (Host-Only Network)
 
-VMware:
-Network Adapter → Custom → VMnet2 ONLY
+VMware → Edit → Virtual Network Editor
+Click → Change Settings (Admin)
 
-Static IP:
+Click → Add Network
+Select → VMnet2
+
+Set:
+
+Type: Host-Only
+Subnet IP: 192.168.126.0
+Subnet Mask: 255.255.255.0
+
+Disable DHCP (Recommended)
+
+Click OK
+
+------------------------------------------------------------
+STEP 2 – Attach Harbor VM to VMnet2 ONLY
+
+VM Settings → Network Adapter
+
+Select:
+Custom → VMnet2
+
+⚠ DO NOT use NAT
+⚠ DO NOT use Bridged
+
+Harbor must be fully air-gapped.
+
+============================================================
+PART 2 – Configure Static IP (Harbor VM)
 
 nmcli connection modify ens33 \
 ipv4.method manual \
@@ -38,12 +62,13 @@ Verify:
 
 ip a
 ping 192.168.126.20
+ping 192.168.126.30
 
 ============================================================
+PART 3 – Install Docker (OFFLINE METHOD)
 
-PART 2 – Install Docker (OFFLINE)
-
-On Internet VM:
+------------------------------------------------------------
+On Internet VM (with internet):
 
 mkdir /root/docker-rpms
 cd /root/docker-rpms
@@ -55,26 +80,32 @@ containerd.io \
 docker-buildx-plugin \
 docker-compose-plugin
 
+Transfer to Harbor VM:
+
 scp *.rpm root@192.168.126.10:/root/docker-rpms/
 
 ------------------------------------------------------------
-
 On Harbor VM:
 
 cd /root/docker-rpms
 dnf install -y *.rpm
 
+Start Docker:
+
 systemctl enable docker --now
+
+Verify:
+
 docker version
 
 ============================================================
-
-PART 3 – Harbor Offline Installer
+PART 4 – Harbor Offline Installer
 
 On Internet VM:
 
 scp harbor-offline-installer-v2.10.1.tgz root@192.168.126.10:/root/
 
+------------------------------------------------------------
 On Harbor VM:
 
 cd /root
@@ -82,11 +113,13 @@ tar -xzf harbor-offline-installer-v2.10.1.tgz
 cd harbor
 
 ============================================================
-
-PART 4 – Generate HTTPS Certificate
+PART 5 – Generate HTTPS Certificates
 
 mkdir -p /data/cert
 cd /data/cert
+
+------------------------------------------------------------
+Generate CA
 
 openssl genrsa -out ca.key 4096
 
@@ -95,6 +128,9 @@ openssl req -x509 -new -nodes -sha512 -days 3650 \
 -key ca.key \
 -out ca.crt
 
+------------------------------------------------------------
+Generate Harbor Key
+
 openssl genrsa -out harbor.key 4096
 
 openssl req -sha512 -new \
@@ -102,7 +138,8 @@ openssl req -sha512 -new \
 -key harbor.key \
 -out harbor.csr
 
-Create extension:
+------------------------------------------------------------
+Create v3.ext
 
 cat > v3.ext <<EOF
 authorityKeyIdentifier=keyid,issuer
@@ -115,6 +152,9 @@ subjectAltName=@alt_names
 IP.1=192.168.126.10
 EOF
 
+------------------------------------------------------------
+Sign Certificate
+
 openssl x509 -req -sha512 -days 3650 \
 -extfile v3.ext \
 -CA ca.crt -CAkey ca.key -CAcreateserial \
@@ -122,13 +162,13 @@ openssl x509 -req -sha512 -days 3650 \
 -out harbor.crt
 
 ============================================================
-
-PART 5 – Configure harbor.yml
+PART 6 – Configure harbor.yml
 
 cd /root/harbor
+
 cp harbor.yml.tmpl harbor.yml
 
-Edit:
+Edit harbor.yml:
 
 hostname: 192.168.126.10
 
@@ -138,8 +178,7 @@ https:
   private_key: /data/cert/harbor.key
 
 ============================================================
-
-PART 6 – Prepare & Install Harbor
+PART 7 – Install Harbor
 
 ./prepare
 ./install.sh
@@ -148,9 +187,10 @@ Verify:
 
 docker ps
 
-============================================================
+Harbor containers should be running.
 
-PART 7 – Restart Harbor
+============================================================
+PART 8 – Restart / Manage Harbor
 
 cd /root/harbor
 
@@ -160,32 +200,44 @@ docker compose down
 Start:
 docker compose up -d
 
-Restart only:
+Restart:
 docker compose restart
 
 ============================================================
+PART 9 – Fix HTTPS Trust (Internet VM Side)
 
-PART 8 – If Push Not Working (Workaround Method)
+If pushing images gives:
 
-If Internet VM cannot push images:
+x509: certificate signed by unknown authority
 
-Method 1 – Fix certificate trust (Recommended)
+------------------------------------------------------------
+Method 1 – Recommended
 
 On Internet VM:
 
+scp root@192.168.126.10:/data/cert/ca.crt /root/
+
 mkdir -p /etc/docker/certs.d/192.168.126.10
+
 cp ca.crt /etc/docker/certs.d/192.168.126.10/ca.crt
+
 systemctl restart docker
 
-OR system-wide:
+Test:
+
+docker login 192.168.126.10
+
+------------------------------------------------------------
+Method 2 – System Wide Trust
 
 cp ca.crt /etc/pki/ca-trust/source/anchors/
 update-ca-trust
 systemctl restart docker
 
-------------------------------------------------------------
+============================================================
+PART 10 – Emergency Fallback (docker save/load)
 
-Method 2 – Use docker save/load (Emergency Offline Method)
+If push from Internet VM fails:
 
 On Internet VM:
 
@@ -194,86 +246,43 @@ docker save nginx -o nginx.tar
 
 scp nginx.tar root@192.168.126.10:/root/
 
+------------------------------------------------------------
 On Harbor VM:
 
 docker load -i nginx.tar
+
 docker tag nginx 192.168.126.10/k8s/nginx:latest
+
 docker push 192.168.126.10/k8s/nginx:latest
 
 ============================================================
+PART 11 – Common Errors & Fixes
 
-PART 9 – Common Errors & Fixes
+❌ x509 error
+→ Check ca.crt in /etc/docker/certs.d/
+→ Restart Docker
 
-------------------------------------------------------------
+❌ Harbor containers down
+docker ps -a
+docker logs harbor-core
 
-❌ x509 certificate error
+❌ docker compose missing
+docker compose version
+Install docker-compose-plugin offline
 
-Check:
-
-/etc/docker/certs.d/192.168.126.10/ca.crt exists
-
-Restart docker.
-
-------------------------------------------------------------
-
-❌ certificate has .cert extension issue
-
-Docker expects:
-
-ca.crt
-
-Rename if needed:
-
-mv harbor.crt harbor.cert
-mv harbor.cert harbor.crt
-
-------------------------------------------------------------
+❌ Port 443 conflict
+ss -tulnp | grep 443
 
 ❌ Harbor IP changed
-
-Update:
-
-harbor.yml
-
-Run:
-
+Edit harbor.yml
 ./prepare
 docker compose down
 docker compose up -d
 
-------------------------------------------------------------
-
-❌ Harbor containers down
-
-Check:
-
-docker ps -a
-docker logs harbor-core
-
-------------------------------------------------------------
-
-❌ docker compose not working
-
-Check:
-
-docker compose version
-
-If missing:
-Install docker-compose-plugin
-
-------------------------------------------------------------
-
-❌ Port 443 already in use
-
-ss -tulnp | grep 443
-
-Stop conflicting service.
-
 ============================================================
+PART 12 – Backup Harbor
 
-PART 10 – Backup Harbor
-
-All registry data:
+All registry data is stored in:
 
 /data/
 
@@ -282,20 +291,21 @@ Backup:
 tar -czvf harbor-backup.tar.gz /data
 
 ============================================================
-
 FINAL CHECKLIST
 
-✔ Harbor VM has no Internet
+✔ VMware VMnet2 created
+✔ Harbor VM Host-Only only
+✔ Static IP configured
 ✔ Docker installed offline
 ✔ Harbor offline installer used
 ✔ ./prepare executed
 ✔ ./install.sh successful
-✔ HTTPS certificate configured
+✔ HTTPS configured
 ✔ CA exported to Internet VM
 ✔ Docker certs.d configured
 ✔ update-ca-trust configured
-✔ docker save/load fallback method ready
+✔ docker save/load fallback ready
 ✔ Harbor containers running
-✔ Images can be pushed
+✔ Images push successful
 
-HARBOR VM COMPLETE – ENTERPRISE AIR-GAPPED READY
+HARBOR VM COMPLETE – FULL ENTERPRISE AIR-GAPPED READY
