@@ -19,7 +19,7 @@
 ## Table of Contents
 
 - [Part 1 – Create Kubernetes VM in VMware](#part-1--create-kubernetes-vm-in-vmware)
-- [Part 2 – Configure Static IP](#part-2--configure-static-ip)
+- [Part 2 – Configure VMnet2 & Static IP](#part-2--configure-vmnet2--static-ip)
 - [Part 3 – Hostname Fix](#part-3--hostname-fix)
 - [Part 4 – Disable Swap](#part-4--disable-swap)
 - [Part 5 – Disable SELinux](#part-5--disable-selinux)
@@ -61,7 +61,50 @@
 
 ---
 
-## Part 2 – Configure Static IP
+## Part 2 – Configure VMnet2 & Static IP
+
+### Step 1 – Create VMnet2 (If Not Already Created)
+
+Navigate to: **VMware → Edit → Virtual Network Editor → Change Settings → Add Network**
+
+| Setting | Value |
+|---------|-------|
+| Name | `VMnet2` |
+| Type | Host-Only |
+| Subnet | `192.168.126.0` |
+| Mask | `255.255.255.0` |
+| DHCP | Disabled |
+
+---
+
+### Step 2 – Attach K8s VM to VMnet2
+
+Navigate to: **VM Settings → Network Adapter**
+
+Select:
+
+```
+Custom → VMnet2
+```
+
+> ⚠️ **DO NOT** use NAT  
+> ⚠️ **DO NOT** use Bridged  
+>
+> Kubernetes VM must be **fully air-gapped.**
+
+---
+
+### Step 3 – Configure Static IP
+
+**Check existing interfaces:**
+
+```bash
+ip a
+```
+
+```bash
+nmcli connection show
+```
 
 **Set static IP** (replace `ens33` with your actual interface):
 
